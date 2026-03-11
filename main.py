@@ -8,7 +8,7 @@ import json
 import os
 import re
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin
 
@@ -104,7 +104,7 @@ def cargar_datos() -> dict:
 
 
 def guardar_datos(datos: dict):
-    datos["ultima_ejecucion"] = datetime.utcnow().isoformat()
+    datos["ultima_ejecucion"] = datetime.now(timezone.utc).isoformat()
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(datos, f, ensure_ascii=False, indent=2)
 
@@ -211,7 +211,7 @@ def fecha_reciente(texto_fecha: str) -> bool:
         anio = int(anio_match.group())
     if mes and anio:
         fecha_curso = datetime(anio, mes, 1)
-        limite = datetime.utcnow() - timedelta(days=MAX_MONTHS_OLD * 30)
+        limite = datetime.now(timezone.utc) - timedelta(days=MAX_MONTHS_OLD * 30)
         return fecha_curso >= limite
     return False
 

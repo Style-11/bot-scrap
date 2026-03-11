@@ -456,6 +456,220 @@ async def ejecutar_bot():
     log.info("▶ Bot finalizado. Próxima ejecución programada.")
 
 
+# ─── Comandos de Telegram (polling) ──────────────────────────────────────────
+
+LAST_UPDATE_ID = 0
+BOT_EJECUTANDO = False  # evita ejecuciones simultáneas
+
+
+async def responder_telegram(chat_id: int | str, texto: str):
+    """Envía una respuesta a un chat específico."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            await client.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            log.error("Error respondiendo a Telegram: %s", exc)
+
+
+async def cmd_start(chat_id: int):
+    await responder_telegram(chat_id, (
+        "🤖 <b>Bot Cazador de Cursos & Becas</b>\n\n"
+        "Comandos disponibles:\n"
+        "/start — Este mensaje\n"
+        "/ejecutar — Ejecutar escaneo completo ahora\n"
+        "/becas — Escanear solo becas\n"
+        "/buscar &lt;tema&gt; — Buscar cursos en Udemy\n"
+        "/estado — Ver estado del bot y datos\n"
+        "/reset — Limpiar historial de notificaciones\n"
+        "/ayuda — Mostrar ayuda"
+    ))
+
+
+async def cmd_estado(chat_id: int):
+    datos = cargar_datos()
+    ultima = datos.get("ultima_ejecucion", "Nunca")
+    n_cursos = len(datos.get("cursos_notificados", []))
+    n_becas = len(datos.get("becas_notificadas", []))
+    await responder_telegram(chat_id, (
+        "📊 <b>Estado del Bot</b>\n\n"
+        f"🕐 <b>Última ejecución:</b> {ultima}\n"
+        f"📚 <b>Cursos notificados:</b> {n_cursos}\n"
+        f"🎓 <b>Becas notificadas:</b> {n_becas}\n"
+        f"⏱ <b>Intervalo:</b> cada {os.environ.get('INTERVAL_HOURS', '12')}h\n"
+        f"⭐ <b>Filtro:</b> ≥{MIN_RATING}★, ≥{MIN_STUDENTS:,} alumnos, ≤S/{MAX_PRICE_PEN:.2f}"
+    ))
+
+
+async def cmd_reset(chat_id: int):
+    datos = {"cursos_notificados": [], "becas_notificadas": [], "ultima_ejecucion": None}
+    guardar_datos(datos)
+    await responder_telegram(chat_id, "🗑 <b>Historial limpiado.</b>\nEn la próxima ejecución se notificará todo de nuevo.")
+
+
+async def cmd_ejecutar(chat_id: int):
+    global BOT_EJECUTANDO
+    if BOT_EJECUTANDO:
+        await responder_telegram(chat_id, "⏳ Ya hay un escaneo en progreso. Espera a que termine.")
+        return
+    await responder_telegram(chat_id, "🔄 <b>Iniciando escaneo completo...</b>\nEsto puede tardar unos minutos.")
+    BOT_EJECUTANDO = True
+    try:
+        await ejecutar_bot()
+        await responder_telegram(chat_id, "✅ <b>Escaneo completo terminado.</b>")
+    except Exception as exc:
+        await responder_telegram(chat_id, f"❌ <b>Error:</b> <code>{exc}</code>")
+    finally:
+        BOT_EJECUTANDO = False
+
+
+async def cmd_becas(chat_id: int):
+    global BOT_EJECUTANDO
+    if BOT_EJECUTANDO:
+        await responder_telegram(chat_id, "⏳ Ya hay un escaneo en progreso.")
+        return
+    await responder_telegram(chat_id, "🎓 <b>Escaneando becas...</b>")
+    BOT_EJECUTANDO = True
+    try:
+        datos = cargar_datos()
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                locale="es-PE", timezone_id="America/Lima",
+            )
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            page = await context.new_page()
+            becas = await rastrear_becas_oficiales(page, datos)
+            for beca in becas:
+                await responder_telegram(chat_id, formato_beca(beca))
+                await asyncio.sleep(0.5)
+            await browser.close()
+        guardar_datos(datos)
+        if not becas:
+            await responder_telegram(chat_id, "ℹ️ No se encontraron becas nuevas.")
+        else:
+            await responder_telegram(chat_id, f"✅ {len(becas)} becas encontradas.")
+    except Exception as exc:
+        await responder_telegram(chat_id, f"❌ Error: <code>{exc}</code>")
+    finally:
+        BOT_EJECUTANDO = False
+
+
+async def cmd_buscar(chat_id: int, tema: str):
+    global BOT_EJECUTANDO
+    if BOT_EJECUTANDO:
+        await responder_telegram(chat_id, "⏳ Ya hay un escaneo en progreso.")
+        return
+    if not tema:
+        await responder_telegram(chat_id, "❓ Uso: /buscar &lt;tema&gt;\nEjemplo: /buscar Python 2026")
+        return
+    await responder_telegram(chat_id, f"🔍 <b>Buscando:</b> {tema}...")
+    BOT_EJECUTANDO = True
+    try:
+        datos = cargar_datos()
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                locale="es-PE", timezone_id="America/Lima",
+            )
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            page = await context.new_page()
+            cursos = await _buscar_udemy(page, tema)
+            await browser.close()
+
+        enviados = 0
+        for curso in cursos:
+            msg = (
+                f"📚 <b>{curso['nombre']}</b>\n"
+                f"👨‍🏫 {curso.get('instructor', 'N/A')}\n"
+                f"⭐ {curso['rating']} | 👥 {curso['estudiantes']:,} | 💰 S/{curso['precio']:.2f}\n"
+                f"🔗 {curso['url']}"
+            )
+            await responder_telegram(chat_id, msg)
+            enviados += 1
+            await asyncio.sleep(0.5)
+            if enviados >= 5:
+                break
+
+        if enviados == 0:
+            await responder_telegram(chat_id, f"ℹ️ No se encontraron cursos para '{tema}'.")
+        else:
+            await responder_telegram(chat_id, f"✅ Se mostraron {enviados} resultados para '{tema}'.")
+    except Exception as exc:
+        await responder_telegram(chat_id, f"❌ Error: <code>{exc}</code>")
+    finally:
+        BOT_EJECUTANDO = False
+
+
+async def procesar_comando(mensaje: dict):
+    """Procesa un mensaje/comando recibido de Telegram."""
+    chat_id = mensaje.get("chat", {}).get("id")
+    texto = mensaje.get("text", "").strip()
+    if not chat_id or not texto:
+        return
+
+    # Solo responder al chat autorizado
+    if str(chat_id) != TELEGRAM_CHAT_ID:
+        await responder_telegram(chat_id, "⛔ No estás autorizado para usar este bot.")
+        return
+
+    texto_lower = texto.lower()
+
+    if texto_lower == "/start" or texto_lower == "/ayuda":
+        await cmd_start(chat_id)
+    elif texto_lower == "/estado":
+        await cmd_estado(chat_id)
+    elif texto_lower == "/reset":
+        await cmd_reset(chat_id)
+    elif texto_lower == "/ejecutar":
+        await cmd_ejecutar(chat_id)
+    elif texto_lower == "/becas":
+        await cmd_becas(chat_id)
+    elif texto_lower.startswith("/buscar"):
+        tema = texto[7:].strip()
+        await cmd_buscar(chat_id, tema)
+    else:
+        await responder_telegram(chat_id, "❓ Comando no reconocido. Escribe /ayuda para ver los comandos.")
+
+
+async def polling_telegram():
+    """Escucha nuevos mensajes de Telegram usando long polling."""
+    global LAST_UPDATE_ID
+    log.info("📡 Polling de Telegram activo. Escuchando comandos...")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+
+    async with httpx.AsyncClient(timeout=35) as client:
+        while True:
+            try:
+                params = {"offset": LAST_UPDATE_ID + 1, "timeout": 30}
+                resp = await client.get(url, params=params)
+                if resp.status_code != 200:
+                    log.error("Polling error %s: %s", resp.status_code, resp.text)
+                    await asyncio.sleep(5)
+                    continue
+                data = resp.json()
+                for update in data.get("result", []):
+                    LAST_UPDATE_ID = update["update_id"]
+                    if "message" in update:
+                        asyncio.create_task(procesar_comando(update["message"]))
+            except httpx.ReadTimeout:
+                continue  # normal en long polling
+            except Exception as exc:
+                log.error("Error en polling: %s", exc)
+                await asyncio.sleep(5)
+
+
 # ─── Scheduler (intervalo configurable) ──────────────────────────────────────
 
 async def scheduler():
@@ -476,5 +690,14 @@ async def scheduler():
         await asyncio.sleep(intervalo_horas * 3600)
 
 
+async def main():
+    """Ejecuta el polling de comandos y el scheduler en paralelo."""
+    log.info("🚀 Bot iniciado. Polling + Scheduler activos.")
+    await asyncio.gather(
+        polling_telegram(),
+        scheduler(),
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(scheduler())
+    asyncio.run(main())

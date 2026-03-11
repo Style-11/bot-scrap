@@ -10,12 +10,15 @@ import re
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 
 import httpx
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 # ─── Configuración ────────────────────────────────────────────────────────────
+
+load_dotenv()  # carga .env automáticamente
 
 logging.basicConfig(
     level=logging.INFO,
@@ -348,7 +351,6 @@ async def _escanear_pagina_becas(page, fuente: dict, datos: dict) -> list[dict]:
                         continue
 
                     if not href.startswith("http"):
-                        from urllib.parse import urljoin
                         href = urljoin(fuente["url"], href)
 
                     # Filtro por palabras relevantes

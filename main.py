@@ -36,7 +36,7 @@ DATA_FILE = Path(__file__).parent / "data.json"
 MIN_RATING = 4.6
 MIN_STUDENTS = 5_000
 MAX_MONTHS_OLD = 6
-MAX_PRICE_PEN = 39.90
+MAX_PRICE_PEN = 49.90
 
 # ─── Listas de búsqueda ──────────────────────────────────────────────────────
 
